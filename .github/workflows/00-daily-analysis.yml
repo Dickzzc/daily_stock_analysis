@@ -2,9 +2,9 @@ name: 每日股票分析
 # Fork deployment marker: keeps this workflow registered on personal forks.
 
 on:
-  # 定时触发 - 每天北京时间 18:00 (UTC 10:00)
+  # 定时触发 - 每天北京时间 07:00 (UTC 23:00)
   schedule:
-    - cron: '0 10 * * 1-5'     # 周一到周五，UTC 10:00 = 北京时间 18:00
+    - cron: '0 23 * * *'       # 每天 UTC 23:00 = 次日北京时间 07:00
   
   # 手动触发
   workflow_dispatch:
@@ -262,6 +262,10 @@ jobs:
           BRAVE_API_KEYS: ${{ secrets.BRAVE_API_KEYS }}
           SEARXNG_BASE_URLS: ${{ secrets.SEARXNG_BASE_URLS }}
           SEARXNG_PUBLIC_INSTANCES_ENABLED: ${{ vars.SEARXNG_PUBLIC_INSTANCES_ENABLED || secrets.SEARXNG_PUBLIC_INSTANCES_ENABLED }}
+          NEWS_STRATEGY_PROFILE: ${{ vars.NEWS_STRATEGY_PROFILE || secrets.NEWS_STRATEGY_PROFILE || 'short' }}
+          NEWS_MAX_AGE_DAYS: ${{ vars.NEWS_MAX_AGE_DAYS || secrets.NEWS_MAX_AGE_DAYS || '2' }}
+          SOCIAL_SENTIMENT_API_KEY: ${{ secrets.SOCIAL_SENTIMENT_API_KEY }}
+          SOCIAL_SENTIMENT_API_URL: ${{ vars.SOCIAL_SENTIMENT_API_URL || secrets.SOCIAL_SENTIMENT_API_URL || 'https://api.adanos.org' }}
           
           # ==========================================
           # 通知渠道（可同时配置多个，全部推送）
