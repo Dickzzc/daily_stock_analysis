@@ -624,6 +624,36 @@ def fallback_analysis(item: NewsItem) -> Dict[str, Any]:
     }
 
 
+def analysis_for_item(item: NewsItem, analyses: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+    return analyses.get(item.fingerprint) or fallback_analysis(item)
+
+
+def is_low_strength_low_confidence(analysis: Dict[str, Any]) -> bool:
+    impact = str(analysis.get("impact_level", "")).strip().lower()
+    confidence = str(analysis.get("confidence", "")).strip().lower()
+    return impact == "low" and confidence == "low"
+
+
+def filter_notifiable_items(
+    items: Sequence[NewsItem], analyses: Dict[str, Dict[str, Any]]
+) -> List[NewsItem]:
+    notifiable: List[NewsItem] = []
+    skipped = 0
+    for item in items:
+        analysis = analysis_for_item(item, analyses)
+        if is_low_strength_low_confidence(analysis):
+            skipped += 1
+            print(
+                "Filtered low-impact low-confidence person-stock item: "
+                f"{item.person_label} {','.join(item.tickers)} {item.title}"
+            )
+            continue
+        notifiable.append(item)
+    if skipped:
+        print(f"Filtered low-impact low-confidence items: {skipped}")
+    return notifiable
+
+
 def direction_label(direction: str) -> str:
     mapping = {
         "positive": "偏利好",
@@ -643,7 +673,7 @@ def build_message(items: Sequence[NewsItem], analyses: Dict[str, Dict[str, Any]]
         "",
     ]
     for idx, item in enumerate(items, 1):
-        analysis = analyses.get(item.fingerprint) or fallback_analysis(item)
+        analysis = analysis_for_item(item, analyses)
         tickers = ", ".join(analysis.get("tickers") or item.tickers)
         direction = direction_label(str(analysis.get("direction", "unclear")))
         impact = str(analysis.get("impact_level", "low"))
@@ -730,14 +760,21 @@ def main() -> int:
         return 0
 
     analyses = analyze_with_openai(new_items)
-    message = build_message(new_items, analyses)
-    print(message if dry_run else f"Prepared Feishu message for {len(new_items)} items")
+    notifiable_items = filter_notifiable_items(new_items, analyses)
+
+    seen.extend(item.fingerprint for item in new_items)
+    save_state(state_path, seen)
+
+    if not notifiable_items:
+        print("No person-stock items passed impact/confidence filters")
+        return 0
+
+    message = build_message(notifiable_items, analyses)
+    print(message if dry_run else f"Prepared Feishu message for {len(notifiable_items)} items")
 
     if not dry_run and not send_feishu(message):
         return 1
 
-    seen.extend(item.fingerprint for item in new_items)
-    save_state(state_path, seen)
     return 0
 
 
