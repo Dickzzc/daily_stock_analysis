@@ -189,6 +189,14 @@ class NewsItem:
     fingerprint: str
 
 
+@dataclass
+class OpenAIAnalysisConfig:
+    api_key: str
+    model: str
+    base_url: Optional[str]
+    source: str
+
+
 def env_int(name: str, default: int, *, minimum: Optional[int] = None, maximum: Optional[int] = None) -> int:
     raw = os.getenv(name, "").strip()
     try:
@@ -200,6 +208,38 @@ def env_int(name: str, default: int, *, minimum: Optional[int] = None, maximum: 
     if maximum is not None:
         value = min(maximum, value)
     return value
+
+
+def split_env_values(raw: str) -> List[str]:
+    return [part.strip() for part in re.split(r"[\s,;]+", raw or "") if part.strip()]
+
+
+def first_env_value(*names: str) -> str:
+    for name in names:
+        value = os.getenv(name, "").strip()
+        if value:
+            return value
+    return ""
+
+
+def first_env_list_value(*names: str) -> str:
+    for name in names:
+        values = split_env_values(os.getenv(name, ""))
+        if values:
+            return values[0]
+    return ""
+
+
+def env_enabled(name: str, default: bool = True) -> bool:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    return raw.strip().lower() not in {"0", "false", "no", "off", "disabled"}
+
+
+def first_model(*names: str, default: str = "gpt-4o-mini") -> str:
+    value = first_env_list_value(*names)
+    return value or default
 
 
 def parse_stock_list(raw: str) -> List[str]:
@@ -372,18 +412,130 @@ def collect_relevant_items(people: Sequence[Dict[str, str]], watchlist: Sequence
     return relevant
 
 
+def resolve_channel_openai_config(channel: str) -> Optional[OpenAIAnalysisConfig]:
+    channel_lower = channel.strip().lower()
+    if not channel_lower:
+        return None
+    channel_upper = re.sub(r"[^A-Za-z0-9]+", "_", channel_lower).upper()
+    if not env_enabled(f"LLM_{channel_upper}_ENABLED", default=True):
+        return None
+
+    protocol = os.getenv(f"LLM_{channel_upper}_PROTOCOL", "").strip().lower()
+    base_url = os.getenv(f"LLM_{channel_upper}_BASE_URL", "").strip() or None
+    if channel_lower == "anspire":
+        protocol = protocol or "openai"
+        base_url = base_url or os.getenv("ANSPIRE_LLM_BASE_URL", "").strip() or "https://open-gateway.anspire.cn/v6"
+    if protocol and protocol != "openai":
+        return None
+
+    api_key = first_env_list_value(f"LLM_{channel_upper}_API_KEYS", f"LLM_{channel_upper}_API_KEY")
+    if not api_key and channel_lower == "anspire" and env_enabled("ANSPIRE_LLM_ENABLED", default=True):
+        api_key = first_env_list_value("ANSPIRE_API_KEYS")
+    if not api_key:
+        return None
+
+    model = first_model(f"LLM_{channel_upper}_MODELS", default="")
+    if not model and channel_lower == "anspire":
+        model = first_env_value("ANSPIRE_LLM_MODEL") or "Doubao-Seed-2.0-lite"
+    if not model:
+        model = "gpt-4o-mini"
+
+    return OpenAIAnalysisConfig(
+        api_key=api_key,
+        model=model,
+        base_url=base_url,
+        source=f"LLM_{channel_upper}",
+    )
+
+
+def resolve_openai_analysis_config() -> Optional[OpenAIAnalysisConfig]:
+    configs = resolve_openai_analysis_configs()
+    return configs[0] if configs else None
+
+
+def append_unique_config(configs: List[OpenAIAnalysisConfig], config: Optional[OpenAIAnalysisConfig]) -> None:
+    if not config:
+        return
+    identity = (config.model, config.base_url, config.api_key[:8])
+    for existing in configs:
+        existing_identity = (existing.model, existing.base_url, existing.api_key[:8])
+        if existing_identity == identity:
+            return
+    configs.append(config)
+
+
+def resolve_openai_analysis_configs() -> List[OpenAIAnalysisConfig]:
+    configs: List[OpenAIAnalysisConfig] = []
+    channels = split_env_values(os.getenv("LLM_CHANNELS", ""))
+    for channel in channels:
+        append_unique_config(configs, resolve_channel_openai_config(channel))
+
+    openai_api_key = first_env_list_value("OPENAI_API_KEYS")
+    openai_source = "OPENAI_API_KEYS" if openai_api_key else ""
+    base_url = os.getenv("OPENAI_BASE_URL", "").strip() or None
+    if not openai_api_key:
+        aihubmix_key = first_env_value("AIHUBMIX_KEY")
+        if aihubmix_key:
+            openai_api_key = aihubmix_key
+            openai_source = "AIHUBMIX_KEY"
+            base_url = base_url or "https://aihubmix.com/v1"
+    if not openai_api_key:
+        openai_api_key = first_env_value("OPENAI_API_KEY")
+        openai_source = "OPENAI_API_KEY" if openai_api_key else ""
+    if openai_api_key:
+        append_unique_config(
+            configs,
+            OpenAIAnalysisConfig(
+                api_key=openai_api_key,
+                model=first_model("OPENAI_MODEL", default="gpt-4o-mini"),
+                base_url=base_url,
+                source=openai_source,
+            ),
+        )
+
+    if env_enabled("ANSPIRE_LLM_ENABLED", default=True):
+        anspire_key = first_env_list_value("ANSPIRE_API_KEYS")
+        if anspire_key:
+            append_unique_config(
+                configs,
+                OpenAIAnalysisConfig(
+                    api_key=anspire_key,
+                    model=first_env_value("ANSPIRE_LLM_MODEL") or "Doubao-Seed-2.0-lite",
+                    base_url=os.getenv("ANSPIRE_LLM_BASE_URL", "").strip() or "https://open-gateway.anspire.cn/v6",
+                    source="ANSPIRE_API_KEYS",
+                ),
+            )
+
+    for channel in ("openai", "aihubmix", "anspire", "primary", "secondary"):
+        append_unique_config(configs, resolve_channel_openai_config(channel))
+    return configs
+
+
 def analyze_with_openai(items: Sequence[NewsItem]) -> Dict[str, Dict[str, Any]]:
-    api_key = os.getenv("OPENAI_API_KEY", "").strip()
-    if not api_key or not items:
+    if not items:
+        return {}
+    os.environ.pop("PERSON_MONITOR_OPENAI_FALLBACK_REASON", None)
+    openai_configs = resolve_openai_analysis_configs()
+    if not openai_configs:
+        os.environ["PERSON_MONITOR_OPENAI_FALLBACK_REASON"] = (
+            "未配置 OpenAI 兼容分析通道，已使用关键词降级判断。"
+        )
+        print(
+            "OpenAI-compatible analysis is not configured; checked OPENAI_API_KEY(S), "
+            "AIHUBMIX_KEY, ANSPIRE_API_KEYS, and LLM_* channels",
+            file=sys.stderr,
+        )
         return {}
 
     try:
         from openai import OpenAI
     except Exception as exc:
+        os.environ["PERSON_MONITOR_OPENAI_FALLBACK_REASON"] = (
+            "OpenAI SDK 不可用，已使用关键词降级判断。"
+        )
         print(f"OpenAI SDK unavailable: {exc}", file=sys.stderr)
         return {}
 
-    model = os.getenv("OPENAI_MODEL", "gpt-4o-mini").strip() or "gpt-4o-mini"
     payload = [
         {
             "id": item.fingerprint,
@@ -403,23 +555,42 @@ def analyze_with_openai(items: Sequence[NewsItem]) -> Dict[str, Dict[str, Any]]:
         "confidence 只能是 high, medium, low。不要编造新闻中没有的信息。"
     )
 
-    try:
-        client = OpenAI(api_key=api_key)
-        response = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
-            ],
-            temperature=0.2,
+    last_error = ""
+    for openai_config in openai_configs:
+        try:
+            client_kwargs: Dict[str, Any] = {"api_key": openai_config.api_key}
+            if openai_config.base_url:
+                client_kwargs["base_url"] = openai_config.base_url
+            client = OpenAI(**client_kwargs)
+            print(
+                f"Running OpenAI-compatible analysis via {openai_config.source} "
+                f"model={openai_config.model} base_url={openai_config.base_url or 'default'}"
+            )
+            response = client.chat.completions.create(
+                model=openai_config.model,
+                messages=[
+                    {"role": "system", "content": prompt},
+                    {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+                ],
+                temperature=0.2,
+            )
+            content = response.choices[0].message.content or "[]"
+            content = content.strip()
+            if content.startswith("```"):
+                content = re.sub(r"^```(?:json)?\s*|\s*```$", "", content, flags=re.IGNORECASE | re.DOTALL).strip()
+            parsed = json.loads(content)
+            break
+        except Exception as exc:
+            last_error = f"{type(exc).__name__}: {exc}"
+            print(
+                f"OpenAI-compatible analysis failed via {openai_config.source}: {last_error}",
+                file=sys.stderr,
+            )
+    else:
+        os.environ["PERSON_MONITOR_OPENAI_FALLBACK_REASON"] = (
+            f"已启用 OpenAI 兼容分析，但所有配置通道调用失败（{last_error}），已使用关键词降级判断。"
         )
-        content = response.choices[0].message.content or "[]"
-        content = content.strip()
-        if content.startswith("```"):
-            content = re.sub(r"^```(?:json)?\s*|\s*```$", "", content, flags=re.IGNORECASE | re.DOTALL).strip()
-        parsed = json.loads(content)
-    except Exception as exc:
-        print(f"OpenAI analysis failed: {exc}", file=sys.stderr)
+        print(f"OpenAI analysis failed for all configured channels: {last_error}", file=sys.stderr)
         return {}
 
     results: Dict[str, Dict[str, Any]] = {}
@@ -445,7 +616,10 @@ def fallback_analysis(item: NewsItem) -> Dict[str, Any]:
         "impact_level": "medium" if direction != "unclear" else "low",
         "confidence": "low",
         "summary_zh": "检测到人物相关报道提及自选股，需结合原文进一步确认。",
-        "reason_zh": "未启用或未成功调用 OpenAI 分析，已使用关键词降级判断。",
+        "reason_zh": os.getenv(
+            "PERSON_MONITOR_OPENAI_FALLBACK_REASON",
+            "未配置 OpenAI 兼容分析通道，已使用关键词降级判断。",
+        ),
         "watch_points_zh": "关注后续权威媒体报道、盘前/盘后价格变化、成交量和公司回应。",
     }
 
