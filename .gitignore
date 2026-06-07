@@ -43,6 +43,7 @@ venv/
 ENV/
 env/
 .venv/
+.venv*/
 
 # IDE
 .idea/
@@ -56,6 +57,7 @@ env/
 /data/
 logs/
 reports/
+/artifacts/
 *.db
 *.sqlite
 *.sqlite3

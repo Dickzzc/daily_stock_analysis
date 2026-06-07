@@ -1,0 +1,32 @@
+[
+  {
+    "name": "yfinance",
+    "url": "https://github.com/ranaroussi/yfinance",
+    "role": "Yahoo Finance market data",
+    "usage": "Fetch US stock historical prices and ticker metadata for AAPL, NVDA, SPY, and custom watchlists."
+  },
+  {
+    "name": "OpenBB",
+    "url": "https://github.com/OpenBB-finance/OpenBB",
+    "role": "Deep research platform",
+    "usage": "Optional provider-rich research layer; checked as an import probe in the smoke workflow."
+  },
+  {
+    "name": "FinanceToolkit",
+    "url": "https://github.com/JerBouma/FinanceToolkit",
+    "role": "Fundamental analysis toolkit",
+    "usage": "Probe profitability ratios and transparent fundamental calculations."
+  },
+  {
+    "name": "vectorbt",
+    "url": "https://github.com/polakowo/vectorbt",
+    "role": "Vectorized backtesting engine",
+    "usage": "Run a dual-moving-average strategy smoke backtest on yfinance close prices."
+  },
+  {
+    "name": "awesome-quant",
+    "url": "https://github.com/wilsonfreitas/awesome-quant",
+    "role": "Quant resource navigation",
+    "usage": "Curated map for data sources, backtesting frameworks, AI quant resources, and risk tooling."
+  }
+]

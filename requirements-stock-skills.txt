@@ -1,0 +1,10 @@
+# Optional US stock research skill lab dependencies.
+# Kept separate from requirements.txt so the normal daily analysis deployment
+# does not inherit heavy research/backtesting packages.
+yfinance>=0.2.64
+pandas>=2.2
+numpy>=1.26
+vectorbt>=0.28.0
+ipywidgets<8
+financetoolkit>=2.0.0
+pytest>=8.0

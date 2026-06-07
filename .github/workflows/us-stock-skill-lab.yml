@@ -1,0 +1,59 @@
+name: US Stock Skill Lab
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "scripts/us_stock_skill_lab.py"
+      - "tests/test_us_stock_skill_lab.py"
+      - "docs/us-stock-skill-lab.md"
+      - "docs/us_stock_skill_resources.json"
+      - "requirements-stock-skills.txt"
+      - ".github/workflows/us-stock-skill-lab.yml"
+  pull_request:
+    paths:
+      - "scripts/us_stock_skill_lab.py"
+      - "tests/test_us_stock_skill_lab.py"
+      - "docs/us-stock-skill-lab.md"
+      - "docs/us_stock_skill_resources.json"
+      - "requirements-stock-skills.txt"
+      - ".github/workflows/us-stock-skill-lab.yml"
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: requirements-stock-skills.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-stock-skills.txt
+
+      - name: Run US stock skill lab
+        run: |
+          python scripts/us_stock_skill_lab.py --tickers AAPL NVDA SPY --period 6mo --out artifacts/us_stock_skill_lab
+
+      - name: Run offline unit tests
+        run: python -m unittest tests.test_us_stock_skill_lab
+
+      - name: Upload US stock skill lab artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: us-stock-skill-lab
+          path: artifacts/us_stock_skill_lab

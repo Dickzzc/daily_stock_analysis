@@ -1,0 +1,2 @@
+# Optional deep-research layer. Install only when OpenBB workflows are needed.
+openbb>=4.4.0
