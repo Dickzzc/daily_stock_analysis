@@ -9,8 +9,13 @@ making them mandatory for the daily production analysis path.
 from __future__ import annotations
 
 import argparse
+import base64
+import hashlib
+import hmac
 import json
 import math
+import os
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -37,6 +42,7 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--tickers", nargs="+", default=DEFAULT_TICKERS, help="US tickers to inspect.")
     parser.add_argument("--period", default="6mo", help="yfinance period, for example 3mo, 6mo, 1y.")
     parser.add_argument("--out", default="artifacts/us_stock_skill_lab", help="Output directory.")
+    parser.add_argument("--notify-feishu", action="store_true", help="Send a concise smoke report to Feishu.")
     return parser.parse_args(list(argv) if argv is not None else None)
 
 
@@ -194,6 +200,82 @@ def write_outputs(out_dir: Path, prices: pd.DataFrame, summary: dict[str, Any]) 
     (out_dir / "report.md").write_text(render_report(summary), encoding="utf-8")
 
 
+def feishu_security_fields(secret: str) -> dict[str, str]:
+    if not secret:
+        return {}
+    timestamp = str(int(time.time()))
+    string_to_sign = f"{timestamp}\n{secret}"
+    digest = hmac.new(string_to_sign.encode("utf-8"), b"", digestmod=hashlib.sha256).digest()
+    sign = base64.b64encode(digest).decode("utf-8")
+    return {"timestamp": timestamp, "sign": sign}
+
+
+def render_feishu_message(summary: dict[str, Any]) -> str:
+    backtest = summary["vectorbt_backtest"]
+    profile_lines = []
+    for ticker in summary["tickers"]:
+        profile = summary.get("yfinance_profiles", {}).get(ticker, {})
+        last_price = profile.get("last_price")
+        price_text = f"${last_price:.2f}" if isinstance(last_price, (int, float)) else "N/A"
+        total_return = backtest.get("total_return", {}).get(ticker)
+        return_text = f"{float(total_return):.2%}" if total_return is not None else "N/A"
+        trades = backtest.get("trades", {}).get(ticker, "N/A")
+        profile_lines.append(f"- {ticker}: 最新价 {price_text} | 双均线回测 {return_text} | 交易次数 {trades}")
+
+    return "\n".join(
+        [
+            "📈 US Stock Skill Lab 测试推送",
+            "",
+            f"标的: {', '.join(summary['tickers'])}",
+            f"周期: {summary['period']} | 数据源: {summary['price_source']}",
+            f"FinanceToolkit: {summary['finance_toolkit']['status']}",
+            f"vectorbt: {backtest['status']} ({backtest['engine']})",
+            f"OpenBB: {summary['openbb']['status']}（可选）",
+            "",
+            *profile_lines,
+            "",
+            "说明: 这是 GitHub Actions 触发的美股 Skill Lab smoke 测试，不构成投资建议。",
+        ]
+    )
+
+
+def send_feishu(summary: dict[str, Any]) -> bool:
+    webhook_url = os.getenv("FEISHU_WEBHOOK_URL", "").strip()
+    if not webhook_url:
+        print("FEISHU_WEBHOOK_URL is not configured")
+        return False
+
+    content = render_feishu_message(summary)
+    keyword = os.getenv("FEISHU_WEBHOOK_KEYWORD", "").strip()
+    if keyword and keyword not in content:
+        content = f"{keyword}\n\n{content}"
+
+    payload: dict[str, Any] = {
+        "msg_type": "interactive",
+        "card": {
+            "config": {"wide_screen_mode": True},
+            "header": {"title": {"tag": "plain_text", "content": "US Stock Skill Lab"}},
+            "elements": [{"tag": "div", "text": {"tag": "lark_md", "content": content[:18000]}}],
+        },
+    }
+    payload.update(feishu_security_fields(os.getenv("FEISHU_WEBHOOK_SECRET", "").strip()))
+
+    try:
+        import requests
+
+        response = requests.post(webhook_url, json=payload, timeout=20)
+        response.raise_for_status()
+        data = response.json()
+    except Exception as exc:
+        print(f"Feishu send failed: {exc}")
+        return False
+
+    if data.get("code", 0) != 0:
+        print(f"Feishu send failed: {data}")
+        return False
+    return True
+
+
 def render_report(summary: dict[str, Any]) -> str:
     backtest = summary["vectorbt_backtest"]
     lines = [
@@ -253,6 +335,8 @@ def main(argv: Iterable[str] | None = None) -> int:
     summary = build_summary(tickers, args.period, price_result)
     write_outputs(Path(args.out), price_result.prices, summary)
     print(json.dumps(summary, ensure_ascii=False, indent=2))
+    if args.notify_feishu and not send_feishu(summary):
+        return 1
     return 0
 
 

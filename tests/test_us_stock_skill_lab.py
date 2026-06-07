@@ -57,6 +57,29 @@ class UsStockSkillLabTest(unittest.TestCase):
             parsed = json.loads((out_dir / "summary.json").read_text(encoding="utf-8"))
             self.assertEqual(parsed["tickers"], ["NVDA"])
 
+    def test_render_feishu_message_contains_core_metrics(self):
+        summary = {
+            "tickers": ["MU"],
+            "period": "6mo",
+            "price_source": "sample",
+            "yfinance_profiles": {"MU": {"last_price": 100.0}},
+            "finance_toolkit": {"status": "ok"},
+            "vectorbt_backtest": {
+                "status": "ok",
+                "engine": "vectorbt",
+                "total_return": {"MU": 0.0345},
+                "trades": {"MU": 2},
+            },
+            "openbb": {"status": "optional_missing"},
+        }
+
+        message = lab.render_feishu_message(summary)
+
+        self.assertIn("MU", message)
+        self.assertIn("FinanceToolkit: ok", message)
+        self.assertIn("vectorbt: ok", message)
+        self.assertIn("3.45%", message)
+
 
 if __name__ == "__main__":
     unittest.main()

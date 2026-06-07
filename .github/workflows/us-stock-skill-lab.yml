@@ -2,6 +2,23 @@ name: US Stock Skill Lab
 
 on:
   workflow_dispatch:
+    inputs:
+      tickers:
+        description: "Space-separated US tickers"
+        required: false
+        default: "AAPL NVDA SPY"
+      period:
+        description: "yfinance period"
+        required: false
+        default: "6mo"
+      notify_feishu:
+        description: "Send summary to Feishu"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
   push:
     branches:
       - main
@@ -46,8 +63,19 @@ jobs:
           python -m pip install -r requirements-stock-skills.txt
 
       - name: Run US stock skill lab
+        env:
+          FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+          FEISHU_WEBHOOK_SECRET: ${{ secrets.FEISHU_WEBHOOK_SECRET }}
+          FEISHU_WEBHOOK_KEYWORD: ${{ vars.FEISHU_WEBHOOK_KEYWORD }}
         run: |
-          python scripts/us_stock_skill_lab.py --tickers AAPL NVDA SPY --period 6mo --out artifacts/us_stock_skill_lab
+          TICKERS="${{ github.event.inputs.tickers || 'AAPL NVDA SPY' }}"
+          PERIOD="${{ github.event.inputs.period || '6mo' }}"
+          NOTIFY="${{ github.event.inputs.notify_feishu || 'false' }}"
+          if [ "$NOTIFY" = "true" ]; then
+            python scripts/us_stock_skill_lab.py --tickers $TICKERS --period "$PERIOD" --out artifacts/us_stock_skill_lab --notify-feishu
+          else
+            python scripts/us_stock_skill_lab.py --tickers $TICKERS --period "$PERIOD" --out artifacts/us_stock_skill_lab
+          fi
 
       - name: Run offline unit tests
         run: python -m unittest tests.test_us_stock_skill_lab
