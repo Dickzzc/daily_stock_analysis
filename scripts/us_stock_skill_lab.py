@@ -49,7 +49,8 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--out", default="artifacts/us_stock_skill_lab", help="Output directory.")
     parser.add_argument("--notify-feishu", action="store_true", help="Send a concise smoke report to Feishu.")
     parser.add_argument("--notify-per-ticker", action="store_true", help="Send one Feishu template card per ticker.")
-    parser.add_argument("--notify-sleep-seconds", type=float, default=0.5, help="Delay between Feishu messages.")
+    parser.add_argument("--notify-sleep-seconds", type=float, default=2.0, help="Delay between Feishu messages.")
+    parser.add_argument("--notify-retries", type=int, default=4, help="Retry count for rate-limited Feishu sends.")
     return parser.parse_args(list(argv) if argv is not None else None)
 
 
@@ -294,7 +295,7 @@ def render_feishu_message(summary: dict[str, Any], ticker: str | None = None) ->
     )
 
 
-def send_feishu(summary: dict[str, Any], ticker: str | None = None) -> bool:
+def send_feishu(summary: dict[str, Any], ticker: str | None = None, max_retries: int = 4) -> bool:
     webhook_url = os.getenv("FEISHU_WEBHOOK_URL", "").strip()
     if not webhook_url:
         print("FEISHU_WEBHOOK_URL is not configured")
@@ -315,30 +316,54 @@ def send_feishu(summary: dict[str, Any], ticker: str | None = None) -> bool:
     }
     payload.update(feishu_security_fields(os.getenv("FEISHU_WEBHOOK_SECRET", "").strip()))
 
-    try:
-        import requests
+    import requests
 
-        response = requests.post(webhook_url, json=payload, timeout=20)
-        response.raise_for_status()
-        data = response.json()
-    except Exception as exc:
-        print(f"Feishu send failed: {exc}")
+    label = ticker or "summary"
+    for attempt in range(max_retries + 1):
+        try:
+            response = requests.post(webhook_url, json=payload, timeout=20)
+            response.raise_for_status()
+            data = response.json()
+        except Exception as exc:
+            if attempt >= max_retries:
+                print(f"Feishu send failed for {label}: {exc}")
+                return False
+            wait_seconds = min(10 * (attempt + 1), 60)
+            print(f"Feishu send retry for {label} after error: {exc}; waiting {wait_seconds}s")
+            time.sleep(wait_seconds)
+            continue
+
+        if data.get("code", 0) == 0:
+            print(f"Feishu send ok for {label}")
+            return True
+
+        if data.get("code") == 11232 and attempt < max_retries:
+            wait_seconds = min(30 * (attempt + 1), 120)
+            print(f"Feishu rate limited for {label}; waiting {wait_seconds}s before retry")
+            time.sleep(wait_seconds)
+            continue
+
+        print(f"Feishu send failed for {label}: {data}")
         return False
 
-    if data.get("code", 0) != 0:
-        print(f"Feishu send failed: {data}")
-        return False
-    return True
+    return False
 
 
-def notify_feishu(summary: dict[str, Any], *, per_ticker: bool = False, sleep_seconds: float = 0.5) -> bool:
+def notify_feishu(
+    summary: dict[str, Any],
+    *,
+    per_ticker: bool = False,
+    sleep_seconds: float = 2.0,
+    max_retries: int = 4,
+) -> bool:
     if not per_ticker:
-        return send_feishu(summary)
+        return send_feishu(summary, max_retries=max_retries)
     ok = True
     for index, ticker in enumerate(summary["tickers"]):
         if index > 0 and sleep_seconds > 0:
             time.sleep(sleep_seconds)
-        ok = send_feishu(summary, ticker=ticker) and ok
+        print(f"Sending Feishu template {index + 1}/{len(summary['tickers'])}: {ticker}")
+        ok = send_feishu(summary, ticker=ticker, max_retries=max_retries) and ok
     return ok
 
 
@@ -405,6 +430,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         summary,
         per_ticker=args.notify_per_ticker,
         sleep_seconds=max(args.notify_sleep_seconds, 0.0),
+        max_retries=max(args.notify_retries, 0),
     ):
         return 1
     return 0

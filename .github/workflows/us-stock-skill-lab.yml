@@ -27,6 +27,10 @@ on:
         options:
           - "summary"
           - "per_ticker"
+      notify_sleep_seconds:
+        description: "Delay between per-ticker Feishu messages"
+        required: false
+        default: "2.0"
   push:
     branches:
       - main
@@ -81,13 +85,14 @@ jobs:
           PERIOD="${{ github.event.inputs.period || '6mo' }}"
           NOTIFY="${{ github.event.inputs.notify_feishu || 'false' }}"
           MODE="${{ github.event.inputs.notify_mode || 'summary' }}"
+          SLEEP_SECONDS="${{ github.event.inputs.notify_sleep_seconds || '2.0' }}"
           TICKER_ARGS=""
           if [ -n "$TICKERS" ]; then
             TICKER_ARGS="--tickers $TICKERS"
           fi
           if [ "$NOTIFY" = "true" ]; then
             if [ "$MODE" = "per_ticker" ]; then
-              python scripts/us_stock_skill_lab.py $TICKER_ARGS --period "$PERIOD" --out artifacts/us_stock_skill_lab --notify-feishu --notify-per-ticker
+              python scripts/us_stock_skill_lab.py $TICKER_ARGS --period "$PERIOD" --out artifacts/us_stock_skill_lab --notify-feishu --notify-per-ticker --notify-sleep-seconds "$SLEEP_SECONDS"
             else
               python scripts/us_stock_skill_lab.py $TICKER_ARGS --period "$PERIOD" --out artifacts/us_stock_skill_lab --notify-feishu
             fi
