@@ -36,7 +36,6 @@ from sqlalchemy import (
     Index,
     UniqueConstraint,
     Text,
-    case,
     select,
     and_,
     or_,
@@ -58,6 +57,7 @@ from src.config import get_config
 
 logger = logging.getLogger(__name__)
 T = TypeVar("T")
+CURRENT_SCHEMA_VERSION = "2026-06-05-create-all-baseline"
 
 # SQLAlchemy ORM 基类
 Base = declarative_base()
@@ -67,6 +67,16 @@ if TYPE_CHECKING:
 
 
 # === 数据模型定义 ===
+
+class DatabaseSchemaMigration(Base):
+    """Applied database schema version marker."""
+
+    __tablename__ = 'schema_migrations'
+
+    version = Column(String(64), primary_key=True)
+    description = Column(String(255), nullable=False)
+    applied_at = Column(DateTime, default=datetime.now, nullable=False, index=True)
+
 
 class StockDaily(Base):
     """
@@ -844,6 +854,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
 
             # 创建所有表
             Base.metadata.create_all(self._engine)
+            self._ensure_schema_migration_record()
 
             self._initialized = True
             logger.info(f"数据库初始化完成: {db_url}")
@@ -861,6 +872,32 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             self._SessionLocal = None
             self.__class__._instance = None
             raise
+
+    def _ensure_schema_migration_record(self) -> None:
+        session = self._SessionLocal()
+        values = {
+            "version": CURRENT_SCHEMA_VERSION,
+            "description": "Baseline schema created through SQLAlchemy metadata.create_all",
+        }
+        try:
+            if self._is_sqlite_engine:
+                statement = sqlite_insert(DatabaseSchemaMigration).values(**values)
+                statement = statement.on_conflict_do_nothing(index_elements=["version"])
+                session.execute(statement)
+            else:
+                session.execute(DatabaseSchemaMigration.__table__.insert().values(**values))
+            session.commit()
+        except IntegrityError:
+            session.rollback()
+            with self._SessionLocal() as verify_session:
+                existing = verify_session.get(DatabaseSchemaMigration, CURRENT_SCHEMA_VERSION)
+            if existing is None:
+                raise
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
 
     @classmethod
     def get_instance(cls) -> 'DatabaseManager':
@@ -1513,6 +1550,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
     def get_analysis_history_paginated(
         self,
         code: Optional[Union[str, List[str]]] = None,
+        report_type: Optional[str] = None,
         start_date: Optional[date] = None,
         end_date: Optional[date] = None,
         offset: int = 0,
@@ -1523,6 +1561,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         
         Args:
             code: 股票代码筛选
+            report_type: 报告类型筛选
             start_date: 开始日期（含）
             end_date: 结束日期（含）
             offset: 偏移量（跳过前 N 条）
@@ -1543,6 +1582,8 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                         conditions.append(AnalysisHistory.code.in_(codes))
                 else:
                     conditions.append(AnalysisHistory.code == code)
+            if report_type:
+                conditions.append(AnalysisHistory.report_type == report_type)
             if start_date:
                 # created_at >= start_date 00:00:00
                 conditions.append(AnalysisHistory.created_at >= datetime.combine(start_date, datetime.min.time()))
@@ -1618,17 +1659,19 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         start_date: Optional[date] = None,
         end_date: Optional[date] = None,
         limit: int = 200,
+        include_market_review: bool = False,
     ) -> List[AnalysisHistory]:
         """
         获取历史记录中的不重复股票列表，每只股票取最新一条记录。
 
         使用子查询按 code 分组取 MAX(id)，再 JOIN 回查完整记录。
-        大盘复盘（code="MARKET"）始终排在最前。
+        默认排除大盘复盘，避免混入普通个股栏。
 
         Args:
             start_date: 开始日期
             end_date: 结束日期
             limit: 最大返回数量
+            include_market_review: 是否包含大盘复盘记录
 
         Returns:
             每条股票最新一条 AnalysisHistory 记录列表
@@ -1648,6 +1691,16 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                 subq = subq.where(
                     AnalysisHistory.created_at < datetime.combine(end_date + timedelta(days=1), datetime.min.time())
                 )
+            if not include_market_review:
+                subq = subq.where(
+                    and_(
+                        AnalysisHistory.code != "MARKET",
+                        or_(
+                            AnalysisHistory.report_type.is_(None),
+                            AnalysisHistory.report_type != "market_review",
+                        ),
+                    )
+                )
             subq = subq.group_by(AnalysisHistory.code).subquery()
 
             results = (
@@ -1655,10 +1708,6 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                     select(AnalysisHistory)
                     .join(subq, AnalysisHistory.id == subq.c.max_id)
                     .order_by(
-                        case(
-                            (AnalysisHistory.code == "MARKET", 0),
-                            else_=1,
-                        ),
                         desc(AnalysisHistory.created_at),
                     )
                     .limit(limit)

@@ -1,5 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { UiLanguageProvider } from '../../contexts/UiLanguageContext';
+import { UI_LANGUAGE_STORAGE_KEY } from '../../utils/uiLanguage';
 import BacktestPage from '../BacktestPage';
 
 const {
@@ -50,6 +52,7 @@ const basePerformance = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  window.localStorage.clear();
   mockGetOverallPerformance.mockResolvedValue(basePerformance);
   mockGetStockPerformance.mockResolvedValue(null);
   mockGetResults.mockResolvedValue({
@@ -86,6 +89,15 @@ beforeEach(() => {
 });
 
 describe('BacktestPage', () => {
+  function renderEnglishPage() {
+    window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, 'en');
+    render(
+      <UiLanguageProvider>
+        <BacktestPage />
+      </UiLanguageProvider>,
+    );
+  }
+
   it('renders shared surface inputs and prediction tracking outputs', async () => {
     render(<BacktestPage />);
 
@@ -111,16 +123,32 @@ describe('BacktestPage', () => {
     expect(screen.getByText('平均模拟收益')).toBeInTheDocument();
   });
 
-  it('filters results with stock code, window, and analysis date range when clicking Filter', async () => {
+  it('renders backtest controls and result headings in English UI mode', async () => {
+    renderEnglishPage();
+
+    expect(await screen.findByPlaceholderText('Filter by stock code (leave empty for all)')).toBeInTheDocument();
+    expect(screen.getByText('Evaluation window')).toBeInTheDocument();
+    expect(screen.getAllByText('Phase').length).toBeGreaterThan(0);
+    expect(screen.getByRole('button', { name: 'Run backtest' })).toBeInTheDocument();
+    expect(screen.getByText('Window return')).toBeInTheDocument();
+    expect(screen.getByText('Direction match')).toBeInTheDocument();
+    expect(screen.getByText('Direction accuracy')).toBeInTheDocument();
+    expect(screen.queryByText('运行回测')).not.toBeInTheDocument();
+    expect(screen.queryByText('窗口收益')).not.toBeInTheDocument();
+  });
+
+  it('filters results with stock code, window, phase, and analysis date range when clicking Filter', async () => {
     render(<BacktestPage />);
 
     const filterInput = await screen.findByPlaceholderText('按股票代码筛选（留空表示全部）');
     const windowInput = screen.getByPlaceholderText('10');
+    const phaseSelect = screen.getByDisplayValue('全部阶段');
     const fromInput = screen.getByLabelText('分析开始日期');
     const toInput = screen.getByLabelText('分析结束日期');
 
     fireEvent.change(filterInput, { target: { value: 'aapl' } });
     fireEvent.change(windowInput, { target: { value: '20' } });
+    fireEvent.change(phaseSelect, { target: { value: 'intraday' } });
     fireEvent.change(fromInput, { target: { value: '2026-03-01' } });
     fireEvent.change(toInput, { target: { value: '2026-03-31' } });
     fireEvent.click(screen.getByRole('button', { name: '筛选' }));
@@ -131,6 +159,7 @@ describe('BacktestPage', () => {
         evalWindowDays: 20,
         analysisDateFrom: '2026-03-01',
         analysisDateTo: '2026-03-31',
+        analysisPhase: 'intraday',
         page: 1,
         limit: 20,
       });
@@ -138,6 +167,7 @@ describe('BacktestPage', () => {
         evalWindowDays: 20,
         analysisDateFrom: '2026-03-01',
         analysisDateTo: '2026-03-31',
+        analysisPhase: 'intraday',
       });
     });
   });
@@ -167,6 +197,7 @@ describe('BacktestPage', () => {
         evalWindowDays: 15,
         analysisDateFrom: undefined,
         analysisDateTo: undefined,
+        analysisPhase: undefined,
         page: 1,
         limit: 20,
       });
@@ -174,6 +205,7 @@ describe('BacktestPage', () => {
         evalWindowDays: 15,
         analysisDateFrom: undefined,
         analysisDateTo: undefined,
+        analysisPhase: undefined,
       });
     });
 
@@ -193,6 +225,7 @@ describe('BacktestPage', () => {
         evalWindowDays: 1,
         analysisDateFrom: undefined,
         analysisDateTo: undefined,
+        analysisPhase: undefined,
         page: 1,
         limit: 20,
       });
@@ -200,6 +233,7 @@ describe('BacktestPage', () => {
         evalWindowDays: 1,
         analysisDateFrom: undefined,
         analysisDateTo: undefined,
+        analysisPhase: undefined,
       });
     });
 
