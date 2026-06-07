@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -57,6 +58,23 @@ class UsStockSkillLabTest(unittest.TestCase):
             parsed = json.loads((out_dir / "summary.json").read_text(encoding="utf-8"))
             self.assertEqual(parsed["tickers"], ["NVDA"])
 
+    def test_resolve_tickers_uses_monitor_list_env(self):
+        previous_stock_skill = os.environ.get("STOCK_SKILL_TICKERS")
+        previous_stock_list = os.environ.get("STOCK_LIST")
+        try:
+            os.environ.pop("STOCK_SKILL_TICKERS", None)
+            os.environ["STOCK_LIST"] = "AAPL,NVDA SPY;AAPL"
+            self.assertEqual(lab.resolve_tickers(None), ["AAPL", "NVDA", "SPY"])
+        finally:
+            if previous_stock_skill is None:
+                os.environ.pop("STOCK_SKILL_TICKERS", None)
+            else:
+                os.environ["STOCK_SKILL_TICKERS"] = previous_stock_skill
+            if previous_stock_list is None:
+                os.environ.pop("STOCK_LIST", None)
+            else:
+                os.environ["STOCK_LIST"] = previous_stock_list
+
     def test_render_feishu_message_contains_core_metrics(self):
         summary = {
             "tickers": ["MU"],
@@ -68,14 +86,19 @@ class UsStockSkillLabTest(unittest.TestCase):
                 "status": "ok",
                 "engine": "vectorbt",
                 "total_return": {"MU": 0.0345},
+                "max_drawdown": {"MU": -0.0123},
                 "trades": {"MU": 2},
             },
             "openbb": {"status": "optional_missing"},
         }
 
-        message = lab.render_feishu_message(summary)
+        message = lab.render_feishu_message(summary, ticker="MU")
 
         self.assertIn("MU", message)
+        self.assertIn("yfinance + OpenBB", message)
+        self.assertIn("FinanceToolkit", message)
+        self.assertIn("vectorbt", message)
+        self.assertIn("awesome-quant", message)
         self.assertIn("FinanceToolkit: ok", message)
         self.assertIn("vectorbt: ok", message)
         self.assertIn("3.45%", message)

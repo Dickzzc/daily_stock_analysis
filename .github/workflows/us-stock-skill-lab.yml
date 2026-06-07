@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       tickers:
-        description: "Space-separated US tickers"
+        description: "Space-separated US tickers. Leave empty to use STOCK_LIST monitor list."
         required: false
-        default: "AAPL NVDA SPY"
+        default: ""
       period:
         description: "yfinance period"
         required: false
@@ -19,6 +19,14 @@ on:
         options:
           - "false"
           - "true"
+      notify_mode:
+        description: "Feishu notify mode"
+        required: false
+        default: "summary"
+        type: choice
+        options:
+          - "summary"
+          - "per_ticker"
   push:
     branches:
       - main
@@ -67,14 +75,24 @@ jobs:
           FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
           FEISHU_WEBHOOK_SECRET: ${{ secrets.FEISHU_WEBHOOK_SECRET }}
           FEISHU_WEBHOOK_KEYWORD: ${{ vars.FEISHU_WEBHOOK_KEYWORD }}
+          STOCK_LIST: ${{ vars.STOCK_LIST }}
         run: |
-          TICKERS="${{ github.event.inputs.tickers || 'AAPL NVDA SPY' }}"
+          TICKERS="${{ github.event.inputs.tickers }}"
           PERIOD="${{ github.event.inputs.period || '6mo' }}"
           NOTIFY="${{ github.event.inputs.notify_feishu || 'false' }}"
+          MODE="${{ github.event.inputs.notify_mode || 'summary' }}"
+          TICKER_ARGS=""
+          if [ -n "$TICKERS" ]; then
+            TICKER_ARGS="--tickers $TICKERS"
+          fi
           if [ "$NOTIFY" = "true" ]; then
-            python scripts/us_stock_skill_lab.py --tickers $TICKERS --period "$PERIOD" --out artifacts/us_stock_skill_lab --notify-feishu
+            if [ "$MODE" = "per_ticker" ]; then
+              python scripts/us_stock_skill_lab.py $TICKER_ARGS --period "$PERIOD" --out artifacts/us_stock_skill_lab --notify-feishu --notify-per-ticker
+            else
+              python scripts/us_stock_skill_lab.py $TICKER_ARGS --period "$PERIOD" --out artifacts/us_stock_skill_lab --notify-feishu
+            fi
           else
-            python scripts/us_stock_skill_lab.py --tickers $TICKERS --period "$PERIOD" --out artifacts/us_stock_skill_lab
+            python scripts/us_stock_skill_lab.py $TICKER_ARGS --period "$PERIOD" --out artifacts/us_stock_skill_lab
           fi
 
       - name: Run offline unit tests

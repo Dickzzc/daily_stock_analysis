@@ -39,11 +39,46 @@ class PriceResult:
 
 def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run US stock skill integration smoke checks.")
-    parser.add_argument("--tickers", nargs="+", default=DEFAULT_TICKERS, help="US tickers to inspect.")
+    parser.add_argument(
+        "--tickers",
+        nargs="*",
+        default=None,
+        help="US tickers to inspect. Defaults to STOCK_SKILL_TICKERS/STOCK_LIST, then AAPL NVDA SPY.",
+    )
     parser.add_argument("--period", default="6mo", help="yfinance period, for example 3mo, 6mo, 1y.")
     parser.add_argument("--out", default="artifacts/us_stock_skill_lab", help="Output directory.")
     parser.add_argument("--notify-feishu", action="store_true", help="Send a concise smoke report to Feishu.")
+    parser.add_argument("--notify-per-ticker", action="store_true", help="Send one Feishu template card per ticker.")
+    parser.add_argument("--notify-sleep-seconds", type=float, default=0.5, help="Delay between Feishu messages.")
     return parser.parse_args(list(argv) if argv is not None else None)
+
+
+def split_tickers(raw: str) -> list[str]:
+    normalized = raw.replace(",", " ").replace(";", " ").replace("\n", " ")
+    return [part.strip().upper() for part in normalized.split() if part.strip()]
+
+
+def dedupe_tickers(tickers: Iterable[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for ticker in tickers:
+        clean = ticker.strip().upper()
+        if clean and clean not in seen:
+            seen.add(clean)
+            result.append(clean)
+    return result
+
+
+def resolve_tickers(cli_tickers: list[str] | None) -> list[str]:
+    if cli_tickers:
+        return dedupe_tickers(cli_tickers)
+
+    for env_name in ("STOCK_SKILL_TICKERS", "STOCK_LIST"):
+        env_tickers = split_tickers(os.getenv(env_name, ""))
+        if env_tickers:
+            return dedupe_tickers(env_tickers)
+
+    return DEFAULT_TICKERS.copy()
 
 
 def sample_prices(tickers: list[str], rows: int = 126) -> pd.DataFrame:
@@ -210,23 +245,43 @@ def feishu_security_fields(secret: str) -> dict[str, str]:
     return {"timestamp": timestamp, "sign": sign}
 
 
-def render_feishu_message(summary: dict[str, Any]) -> str:
+def render_feishu_message(summary: dict[str, Any], ticker: str | None = None) -> str:
     backtest = summary["vectorbt_backtest"]
+    tickers = [ticker] if ticker else summary["tickers"]
     profile_lines = []
-    for ticker in summary["tickers"]:
-        profile = summary.get("yfinance_profiles", {}).get(ticker, {})
+    for current in tickers:
+        profile = summary.get("yfinance_profiles", {}).get(current, {})
         last_price = profile.get("last_price")
         price_text = f"${last_price:.2f}" if isinstance(last_price, (int, float)) else "N/A"
-        total_return = backtest.get("total_return", {}).get(ticker)
+        total_return = backtest.get("total_return", {}).get(current)
         return_text = f"{float(total_return):.2%}" if total_return is not None else "N/A"
-        trades = backtest.get("trades", {}).get(ticker, "N/A")
-        profile_lines.append(f"- {ticker}: 最新价 {price_text} | 双均线回测 {return_text} | 交易次数 {trades}")
+        max_drawdown = backtest.get("max_drawdown", {}).get(current)
+        drawdown_text = f"{float(max_drawdown):.2%}" if max_drawdown is not None else "N/A"
+        trades = backtest.get("trades", {}).get(current, "N/A")
+        profile_lines.extend(
+            [
+                f"## {current} 美股 Skill 模板",
+                "",
+                f"**新手快速上手**：yfinance + OpenBB",
+                f"- yfinance: 最新价 {price_text}，行情数据源 `{summary['price_source']}`",
+                f"- OpenBB: {summary['openbb']['status']}（可选深度研究平台）",
+                "",
+                "**基本面拆解**：FinanceToolkit",
+                f"- FinanceToolkit: {summary['finance_toolkit']['status']}，用于 PE/ROE/利润率/杜邦等透明指标拆解",
+                "",
+                "**策略验证**：vectorbt",
+                f"- 双均线 smoke 回测: 收益 {return_text}，最大回撤 {drawdown_text}，交易次数 {trades}",
+                "",
+                "**系统性进阶**：awesome-quant",
+                "- awesome-quant: 作为数据源、回测、风控、AI 量化资源导航",
+            ]
+        )
 
     return "\n".join(
         [
             "📈 US Stock Skill Lab 测试推送",
             "",
-            f"标的: {', '.join(summary['tickers'])}",
+            f"标的: {', '.join(tickers)}",
             f"周期: {summary['period']} | 数据源: {summary['price_source']}",
             f"FinanceToolkit: {summary['finance_toolkit']['status']}",
             f"vectorbt: {backtest['status']} ({backtest['engine']})",
@@ -239,13 +294,13 @@ def render_feishu_message(summary: dict[str, Any]) -> str:
     )
 
 
-def send_feishu(summary: dict[str, Any]) -> bool:
+def send_feishu(summary: dict[str, Any], ticker: str | None = None) -> bool:
     webhook_url = os.getenv("FEISHU_WEBHOOK_URL", "").strip()
     if not webhook_url:
         print("FEISHU_WEBHOOK_URL is not configured")
         return False
 
-    content = render_feishu_message(summary)
+    content = render_feishu_message(summary, ticker=ticker)
     keyword = os.getenv("FEISHU_WEBHOOK_KEYWORD", "").strip()
     if keyword and keyword not in content:
         content = f"{keyword}\n\n{content}"
@@ -274,6 +329,17 @@ def send_feishu(summary: dict[str, Any]) -> bool:
         print(f"Feishu send failed: {data}")
         return False
     return True
+
+
+def notify_feishu(summary: dict[str, Any], *, per_ticker: bool = False, sleep_seconds: float = 0.5) -> bool:
+    if not per_ticker:
+        return send_feishu(summary)
+    ok = True
+    for index, ticker in enumerate(summary["tickers"]):
+        if index > 0 and sleep_seconds > 0:
+            time.sleep(sleep_seconds)
+        ok = send_feishu(summary, ticker=ticker) and ok
+    return ok
 
 
 def render_report(summary: dict[str, Any]) -> str:
@@ -330,12 +396,16 @@ def json_safe(value: Any) -> Any:
 
 def main(argv: Iterable[str] | None = None) -> int:
     args = parse_args(argv)
-    tickers = [ticker.strip().upper() for ticker in args.tickers if ticker.strip()]
+    tickers = resolve_tickers(args.tickers)
     price_result = load_prices(tickers, args.period)
     summary = build_summary(tickers, args.period, price_result)
     write_outputs(Path(args.out), price_result.prices, summary)
     print(json.dumps(summary, ensure_ascii=False, indent=2))
-    if args.notify_feishu and not send_feishu(summary):
+    if args.notify_feishu and not notify_feishu(
+        summary,
+        per_ticker=args.notify_per_ticker,
+        sleep_seconds=max(args.notify_sleep_seconds, 0.0),
+    ):
         return 1
     return 0
 
